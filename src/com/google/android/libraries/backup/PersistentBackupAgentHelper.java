@@ -9,6 +9,7 @@ import android.content.SharedPreferences.Editor;
 import android.os.ParcelFileDescriptor;
 import android.support.annotation.VisibleForTesting;
 import android.util.Log;
+import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -71,12 +72,16 @@ public abstract class PersistentBackupAgentHelper extends BackupAgentHelper {
 
   /**
    * Returns the predicate that decides which keys should be backed up for each shared preference
-   * file name. There must be no files with the same name as {@link #RESERVED_SHARED_PREFERENCES}.
-   * Assumes all shared preference file names are valid.
+   * file name.
+   *
+   * <p>There must be no files with the same name as {@link #RESERVED_SHARED_PREFERENCES}. This
+   * method assumes that all shared preference file names are valid: they must not contain path
+   * separators ("/").
    *
    * <p>This method will only be called at backup time. At restore time, everything that was backed
    * up is restored.
    *
+   * @see #isSupportedSharedPreferencesName
    * @see BackupKeyPredicates
    */
   protected abstract Map<String, BackupKeyPredicate> getBackupSpecification();
@@ -87,13 +92,9 @@ public abstract class PersistentBackupAgentHelper extends BackupAgentHelper {
    */
   private void writeToBackupFile(
       String srcFileName, Editor editor, BackupKeyPredicate backupKeyPredicate) {
-    if (srcFileName.equals(RESERVED_SHARED_PREFERENCES)) {
-      throw new IllegalStateException("Backup file name \"" + RESERVED_SHARED_PREFERENCES + "\" is "
-          + "reserved by PersistentBackupAgentHelper and cannot be used.");
-    }
-    if (srcFileName.contains(BACKUP_DELIMITER)) {
-      throw new IllegalStateException("Backup file name \"" + srcFileName + "\" cannot contain "
-          + "delimiter \"" + BACKUP_DELIMITER + "\".");
+    if (!isSupportedSharedPreferencesName(srcFileName)) {
+      throw new IllegalArgumentException(
+          "Unsupported shared preferences file name \"" + srcFileName + "\"");
     }
     SharedPreferences srcSharedPreferences = getSharedPreferences(srcFileName, MODE_PRIVATE);
     Map<String, ?> srcMap = srcSharedPreferences.getAll();
@@ -171,7 +172,7 @@ public abstract class PersistentBackupAgentHelper extends BackupAgentHelper {
       String backupKey = entry.getKey();
       Object value = entry.getValue();
       int backupDelimiterIndex = backupKey.indexOf(BACKUP_DELIMITER);
-      if (backupDelimiterIndex < 1 || backupDelimiterIndex >= backupKey.length() - 1) {
+      if (backupDelimiterIndex < 0 || backupDelimiterIndex >= backupKey.length() - 1) {
         Log.w(TAG, "Format of key \"" + backupKey + "\" not understood, so skipping its restore.");
         continue;
       }
@@ -179,6 +180,10 @@ public abstract class PersistentBackupAgentHelper extends BackupAgentHelper {
       String preferenceKey = backupKey.substring(backupDelimiterIndex + 1);
       Editor editor = editors.get(fileName);
       if (editor == null) {
+        if (!isSupportedSharedPreferencesName(fileName)) {
+          Log.w(TAG, "Skipping unsupported shared preferences file name \"" + fileName + "\"");
+          continue;
+        }
         // #apply is called once for each editor later.
         editor = getSharedPreferences(fileName, MODE_PRIVATE).edit();
         editors.put(fileName, editor);
@@ -209,4 +214,19 @@ public abstract class PersistentBackupAgentHelper extends BackupAgentHelper {
    */
   @SuppressWarnings({"unused"})
   protected void onPreferencesRestored(Set<String> names, int appVersionCode) {}
+
+  /**
+   * Returns whether the provided shared preferences file name is supported by this class.
+   *
+   * <p>The following file names are NOT supported:
+   * <ul>
+   *   <li>{@link #RESERVED_SHARED_PREFERENCES}
+   *   <li>file names containing path separators ("/")
+   * </ul>
+   */
+  public static boolean isSupportedSharedPreferencesName(String fileName) {
+    return !fileName.contains(File.separator)
+        && !fileName.contains(BACKUP_DELIMITER) // Same as File.separator. Better safe than sorry.
+        && !RESERVED_SHARED_PREFERENCES.equals(fileName);
+  }
 }
